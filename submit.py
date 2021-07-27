@@ -20,38 +20,28 @@ from shutil import copy, copytree, copyfile, Error as shutilError
 # --- STORAGE_DIR ---
 # Base directory where assignments will be stored. The script will create new directories for
 # each course and the tar files will be placed there. 
-# STORAGE_DIR + /csc135/assignment0/csstu000
-STORAGE_DIR = "/home/kutztown.edu/earl/submissions"
+# STORAGE_DIR + /csc135/assignment0/
+STORAGE_DIR = ""
 
 # --- VALID_COURSES ---
+# This should be a list of the CSC courses you are teaching in a given semster that
+# you will be accepting program submissions for. (Most likely csc135). 
 VALID_COURSES = [
-    'csc135'
 ]
 
 # --- CSIT_FACULTY_GID ---
 # The UNIX group id for the csit_faculty group
 # Can be found with this command: getent group csit_faculty
-CSIT_FACULTY_GID = 220853343
+CSIT_FACULTY_GID = -1
 
 # --- PROF_NAME ---
 # Put your name here
-PROF_NAME = "Prof. Patrick Earl"
-
-
-
-# ---- DEBUGGING PRINT STATEMENTS (IGNORE) ----
-# print("Effective ID:", os.geteuid())
-# print("Real ID:", os.getuid())
-
-# print(sys.argv)
-# os.system('whoami')
-# ---------------------------------------------
+PROF_NAME = ""
 
 # Add a signal handler to prevent the script from being terminated by CTRL-C
 # (This is so the directory permissions don't get out of wack)
 def no_exit(sig, stack):
     pass
-
 signal.signal(signal.SIGINT, no_exit)
 
 # Arguments Check
@@ -69,22 +59,29 @@ elif sys.argv[1] not in VALID_COURSES:
 
 # Begin the copy process
 
+# get the student's login name
 stu_username = os.getlogin()
+# Assign the command line arugments to variables
 course = sys.argv[1]
 assignment_name = sys.argv[2]
+# Get the instructor's UID (since this script is running under their UID)
 instructor_uid = os.getegid()
+# Set the name of the submitted tar file (since the child & parent will both need it)
 tar_name = '{}_{}.tar'.format(stu_username, assignment_name)
+# The location the tar file will be copied to
 assignment_dir = os.path.join(STORAGE_DIR, course, assignment_name)
 
 # Make the assignment directory (if it doesn't exist)
 if not os.path.isdir(assignment_dir):
+    # Make dirs is simlar to running mkdir -p. Highly recommeneded you create the course
+    # directories yourself
     os.makedirs(assignment_dir)
     # Make sure instructor is the owner & group
     os.chown(assignment_dir, os.geteuid(), CSIT_FACULTY_GID)
 
 
-# Change the assignment dir's permissions (777)
-os.chmod(assignment_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+# Change the assignment dir's permissions (704)
+os.chmod(assignment_dir, 0o704)
 
 # Directory is set up and student account can copy into it.
 child_pid = os.fork()
