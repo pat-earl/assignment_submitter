@@ -38,6 +38,10 @@ CSIT_FACULTY_GID = -1
 # Put your name here
 PROF_NAME = ""
 
+# --- PROF_EMAIL ---
+# This is the email students will see when getting a receipt
+PROF_EMAIL = ""
+
 # Add a signal handler to prevent the script from being terminated by CTRL-C
 # (This is so the directory permissions don't get out of wack)
 def no_exit(sig, stack):
@@ -126,7 +130,23 @@ else:
 
     # Reset the assignment submission permissions
     os.chmod(assignment_dir, stat.S_IRWXU)
-    # TODO: Send E-Mail receipt
+    
+    # Send an email receipt to the student
+    # Open the submitted tar file and get it's contents
+    tar = tarfile.open(os.path.join(assignment_dir, tar_name))
+    names = tar.getnames()
+    tar.close()
+
+    mail_command = "echo Files Submitted for " + assignment_name + ":\n\n"
+    mail_command += "\n".join(names)
+    mail_command += "\nThis is an automated email"
+    mail_command += " | /bin/mail -s '[{}] Assignment Submission Receipt' -b {} -r {} {}@live.kutztown.edu".format(
+        course.upper(),
+        PROF_EMAIL,
+        PROF_EMAIL,
+        stu_username
+    )
+    os.system(mail_command)
 
     # Set the euid to the student's and remove the tar file from their directory
     ruid = os.getuid()

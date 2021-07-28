@@ -1,5 +1,8 @@
 /*
- * Wrapper to run the submit.py script with sticky bit set!
+ * Author: Patrick Earl
+ * Used to run the submit.py script, since UNIX ignores SUID bit on interperted scripts.
+ * 
+ * Be sure to set the SUID bit on the executable
 */
 #include <iostream>
 #include <unistd.h>
