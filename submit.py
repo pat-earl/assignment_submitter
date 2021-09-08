@@ -1,156 +1,198 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
-# Author:   Patrick Earl
-# Submit script that will copy student submissions to a specified directory that is only
-# accessibly by the instructor
-#
-# Script needs to be ran by the cpp executable with SUID bit and SGID. (submit.cpp) 
-# Should be owned by instructor and the csit_faculty group
+# Authors:
+#   Patrick Earl
+#   Dylan Schwesinger
 
+# TODO (maybe?)
+# * more ignore patterns
+# * add semester in path
+# * prepend username to archive contents
+
+
+from datetime import datetime
+from shutil import copytree, make_archive, ignore_patterns, copy
+from tempfile import TemporaryDirectory
 import os
-import pwd
-import sys
 import signal
-import stat
+import sys
 import tarfile
-
-from shutil import copy, copytree, copyfile, Error as shutilError
-
-# CONFIGURATION
-# --- STORAGE_DIR ---
-# Base directory where assignments will be stored. The script will create new directories for
-# each course and the tar files will be placed there. 
-# STORAGE_DIR + /csc135/assignment0/
-STORAGE_DIR = ""
-
-# --- VALID_COURSES ---
-# This should be a list of the CSC courses you are teaching in a given semster that
-# you will be accepting program submissions for. (Most likely csc135). 
-VALID_COURSES = [
-]
-
-# --- CSIT_FACULTY_GID ---
-# The UNIX group id for the csit_faculty group
-# Can be found with this command: getent group csit_faculty
-CSIT_FACULTY_GID = -1
-
-# --- PROF_NAME ---
-# Put your name here
-PROF_NAME = ""
-
-# --- PROF_EMAIL ---
-# This is the email students will see when getting a receipt
-PROF_EMAIL = ""
-
-# Add a signal handler to prevent the script from being terminated by CTRL-C
-# (This is so the directory permissions don't get out of wack)
-def no_exit(sig, stack):
-    pass
-signal.signal(signal.SIGINT, no_exit)
-
-# Arguments Check
-if len(sys.argv) < 3:
-    print("Usage: {} <course> <assignment name>".format(sys.argv[0]))
-    print("Course should be in cscXXX format. Where XXX is the course number (i.e. csc135)")
-    print("Assignment name should be the name specified in the assignment handout")
-    print("Run this IN the directory your submittables are in")
-    sys.exit()
-
-elif sys.argv[1] not in VALID_COURSES:
-    print("You need to specify a valid course")
-    print("Where XXX is the course number (i.e. csc135")
-    sys.exit()
-
-# Begin the copy process
-
-# get the student's login name
-stu_username = os.getlogin()
-# Assign the command line arugments to variables
-course = sys.argv[1]
-assignment_name = sys.argv[2]
-# Get the instructor's UID (since this script is running under their UID)
-instructor_uid = os.getegid()
-# Set the name of the submitted tar file (since the child & parent will both need it)
-tar_name = '{}_{}.tar'.format(stu_username, assignment_name)
-# The location the tar file will be copied to
-assignment_dir = os.path.join(STORAGE_DIR, course, assignment_name)
-
-# Make the assignment directory (if it doesn't exist)
-if not os.path.isdir(assignment_dir):
-    # Make dirs is simlar to running mkdir -p. Highly recommeneded you create the course
-    # directories yourself
-    os.makedirs(assignment_dir)
-    # Make sure instructor is the owner & group
-    os.chown(assignment_dir, os.geteuid(), CSIT_FACULTY_GID)
+import json
 
 
-# Change the assignment dir's permissions (704)
-os.chmod(assignment_dir, 0o704)
+def handler(signum, frame):
+    raise Exception("ERROR: timeout")
 
-# Directory is set up and student account can copy into it.
-child_pid = os.fork()
-# CHILD PROCESS
-# Child process is responsible for copying the student's files to said directory
-if child_pid == 0:
-    # Set the EUID back to the student's REAL ID
-    ruid, euid = os.getuid(), os.geteuid()
-    os.setreuid(ruid, ruid)
 
-    print("Do you, {}, wish to submit the following files to {} for {}?".format(stu_username, 
-                                                                                PROF_NAME, 
-                                                                                assignment_name))
-    # Directory listing of the files 
-    for root, dirs, files in os.walk('.', topdown=True):
-        for name in files:
-            print(os.path.join(root, name))
-        for name in dirs:
-            print(os.path.join(root, name))
-    
-    # Confirm the student wants to send the files
-    print("Make sure the assignment name is the same as the one specified in the assignment/project handout!")
-    response = input("Type q or Q + ENTER to cancel or hit ENTER to send the files")
-    if response.lower() == 'q':
-        sys.exit(1)
-   
-    # Tar the directory
-    tar = tarfile.open(tar_name, mode='w:')
-    tar.add(".")
-    tar.close()
+def child(tarfile_basename):
 
-    sys.exit(0)
-
-else:
-    # Wait for the child process (Probably don't need the status code or PID)
-    pid, status = os.wait()
-
-    # Copy the created tar
-    copy(tar_name, os.path.join(assignment_dir, tar_name))
-    # Change the permissions on the tar
-    os.chmod(os.path.join(assignment_dir, tar_name), stat.S_IRUSR | stat.S_IWUSR)
-
-    # Reset the assignment submission permissions
-    os.chmod(assignment_dir, stat.S_IRWXU)
-    
-    # Send an email receipt to the student
-    # Open the submitted tar file and get it's contents
-    tar = tarfile.open(os.path.join(assignment_dir, tar_name))
-    names = tar.getnames()
-    tar.close()
-
-    mail_command = "echo Files Submitted for " + assignment_name + ":\n\n"
-    mail_command += "\n".join(names)
-    mail_command += "\nThis is an automated email"
-    mail_command += " | /bin/mail -s '[{}] Assignment Submission Receipt' -b {} -r {} {}@live.kutztown.edu".format(
-        course.upper(),
-        PROF_EMAIL,
-        PROF_EMAIL,
-        stu_username
-    )
-    os.system(mail_command)
-
-    # Set the euid to the student's and remove the tar file from their directory
+    # set to student's real user ID
     ruid = os.getuid()
     os.setreuid(ruid, ruid)
-    os.remove(tar_name)
 
-# EOF
+    tarfile_name = tarfile_basename + ".tar.gz"
+
+    # remove the tarfile if it exists
+    if os.path.exists(tarfile_name):
+        os.remove(tarfile_name)
+
+    # set an alarm to exit if the archive creation takes too long
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(5)
+
+    # create the tarfile
+    try:
+        with TemporaryDirectory() as tempdir:
+            copytree(
+                os.getcwd(),
+                os.path.join(tempdir, sys.argv[2]),
+                ignore=ignore_patterns(".git", "*~")
+                )
+            make_archive(tarfile_basename, "gztar", tempdir)
+
+        # change the permissions on the tar file
+        os.chmod(tarfile_name, 0o744)
+        #os.chmod(tarfile_name, 0o777)
+    except Exception:
+        os._exit(2)
+
+    # disable alarm
+    signal.alarm(0)
+
+    # exit child
+    os._exit(0)
+
+
+def parent(tarfile_basename):
+
+    # change to uid
+    #euid = os.geteuid()
+    #os.setreuid(euid, euid)
+
+    # wait for the child to finish
+    pid, status = os.wait()
+
+    # check for timeout error
+    if os.WEXITSTATUS(status) == 2:
+        msg = "ERROR: archive creation timed out; " \
+              "you may not be in the correct directory"
+        print(msg)
+        sys.exit(0)
+
+    tarfile_name = tarfile_basename + ".tar.gz"
+
+    print("The following files will be submitted:")
+
+    # get archive contents
+    tar_contents = None
+    with tarfile.open(tarfile_name) as tf:
+        tar_contents = tf.getnames()
+
+    # print the archive contents
+    for name in tar_contents:
+        print(name)
+
+    # Confirm the student wants to send the files
+    response = input("Continue? [y/N] ")
+
+    if response.lower() == "y":
+
+        submission_dir = os.path.join(
+            CONFIG["submission_basedir"], sys.argv[1], sys.argv[2])
+
+        # create the submission directory if it does not exist
+        if not os.path.isdir(submission_dir):
+            oldmask = os.umask(0o077)
+            os.makedirs(submission_dir, 0o700)
+            os.umask(oldmask)
+
+        euid = os.geteuid()
+        ruid = os.getuid()
+        print(euid, ruid)
+        # move the tarfile to the submission directory
+        #os.rename(tarfile_name, os.path.join(submission_dir, tarfile_name))
+        copy(tarfile_name, os.path.join(submission_dir, tarfile_name))
+
+        # log the submission
+        with open(os.path.join(submission_dir, "submission.log"), "a") as f:
+            f.write(datetime.now().isoformat(timespec="minutes"))
+            f.write(" ")
+            f.write(os.getlogin())
+            f.write("\n")
+
+        # send email confirmation
+        mail_command = "/bin/mail -s '[{}] Submission Confirmation'" \
+                       " -b {} -r {} {}@kutztown.edu".format(
+                               sys.argv[1].upper(),
+                               CONFIG["email"],
+                               CONFIG["email"],
+                               os.getlogin()
+                               )
+        mail_contents = "\n".join(
+                ["Files Submitted for {}:".format(sys.argv[2])]
+                + tar_contents
+                + ["This is an automated email"]
+                )
+
+        os.system("echo \"" + mail_contents + "\" | " + mail_command)
+
+        print("Assignment submitted; you will receive a confirmation email.")
+    else:
+        print("Assignment submission halted")
+        # remove the tarfile from the current directory
+
+    # set to student's real user ID
+    ruid = os.getuid()
+    os.setreuid(ruid, ruid)
+    os.remove(tarfile_name)
+
+
+if __name__ == "__main__":
+
+    # ignore the interrupt signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    # load config file
+    with open("/home/kutztown.edu/schwesin/bin/submit_config.json") as f:
+        CONFIG = json.load(f)
+
+    # validate command line arguments
+    if len(sys.argv) != 3:
+        msg = "usage: submit <course> <assignment>\n" \
+              "    course      Course in the form cscXXX" \
+              " where XXX is the course number\n" \
+              "    assignment  Name of the assignment\n" \
+              "\nCreates an archive of the current directory for submission.\n"
+        print(msg)
+        sys.exit(0)
+
+    elif sys.argv[1] not in CONFIG["assignments"]:
+        msg = "ERROR: invalid course\n" \
+              "Valid course values are:"
+        print(msg)
+        for c in CONFIG["assignments"]:
+            print("    ", c)
+        sys.exit(0)
+
+    elif sys.argv[2] not in CONFIG["assignments"][sys.argv[1]]:
+        msg = "ERROR: invalid assignment\n" \
+              "Valid assignments for course {} are:".format(sys.argv[1])
+        print(msg)
+        for a in CONFIG["assignments"][sys.argv[1]]:
+            print("    ", a)
+        sys.exit(0)
+
+    username = os.getlogin()
+
+    if username not in CONFIG["roster"][sys.argv[1]]:
+        msg = "ERROR: you are not in the {} class list".format(sys.argv[1])
+        print(msg)
+        sys.exit(0)
+
+    tarfile_basename = username + "_" + sys.argv[2]
+
+    child_pid = os.fork()
+    if child_pid == 0:
+        child(tarfile_basename)
+    else:
+        parent(tarfile_basename)
